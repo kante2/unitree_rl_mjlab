@@ -11,7 +11,10 @@ INSTALL_REQUIRES = [
 # Installation operation
 setup(
     name="unitree_rl_mjlab",
-    packages=["src"],
+    packages=find_packages(include=["src", "src.*"]),
+    package_data={
+        "src.assets.robots.unitree_go2": ["xmls/*.xml", "xmls/assets/*.obj"],
+    },
     version="0.0.1",
     install_requires=INSTALL_REQUIRES,
 )

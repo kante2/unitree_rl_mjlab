@@ -1,25 +1,24 @@
-"""Script to list mjlab environments."""
+"""Script to list the supported Go2 environments."""
 
 import tyro
 from prettytable import PrettyTable
 
 import mjlab
-import mjlab.tasks  # noqa: F401
-import src.tasks
+import src.tasks  # noqa: F401
 from mjlab.tasks.registry import list_tasks
 
 
 def list_environments(keyword: str | None = None):
-  """List all registered environments.
+  """List the supported Go2 environments.
 
   Args:
     keyword: Optional filter to only show environments containing this keyword.
   """
   table = PrettyTable(["#", "Task ID"])
-  table.title = "Available Environments in mjlab"
+  table.title = "Available Go2 Environments"
   table.align["Task ID"] = "l"
 
-  all_tasks = list_tasks()
+  all_tasks = [task for task in list_tasks() if task.startswith("Unitree-Go2-")]
   idx = 0
   for task_id in all_tasks:
     try:

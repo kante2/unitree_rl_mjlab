@@ -36,7 +36,6 @@
 #include "param.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
-#define NUM_MOTOR_IDL_GO 20
 
 extern "C"
 {
@@ -587,18 +586,14 @@ void *UnitreeSdk2BridgeThread(void *arg)
   unitree::robot::ChannelFactory::Instance()->Init(param::config.domain_id, param::config.interface);
 
 
-  int body_id = mj_name2id(m, mjOBJ_BODY, "torso_link");
-  if (body_id < 0) {
-    body_id = mj_name2id(m, mjOBJ_BODY, "base_link");
+  int body_id = mj_name2id(m, mjOBJ_BODY, "base_link");
+  if (body_id < 0 || m->nu != 12) {
+    std::cerr << "Expected a Go2 model with base_link and 12 actuators." << std::endl;
+    exit(EXIT_FAILURE);
   }
   param::config.band_attached_link = 6 * body_id;
   
-  std::unique_ptr<UnitreeSDK2BridgeBase> interface = nullptr;
-  if (m->nu > NUM_MOTOR_IDL_GO) {
-    interface = std::make_unique<G1Bridge>(m, d);
-  } else {
-    interface = std::make_unique<Go2Bridge>(m, d);
-  }
+  auto interface = std::make_unique<Go2Bridge>(m, d);
   interface->start();
   
   while (true)
@@ -674,6 +669,10 @@ int main(int argc, char **argv)
   std::filesystem::path proj_dir = std::filesystem::path(getExecutableDir()).parent_path();
   param::config.load_from_yaml(proj_dir / "config.yaml");
   param::helper(argc, argv);
+  if (param::config.robot != "go2") {
+    std::cerr << "Only the go2 robot is supported." << std::endl;
+    return EXIT_FAILURE;
+  }
   if(param::config.robot_scene.is_relative()) {
     param::config.robot_scene = proj_dir.parent_path() / param::config.robot_scene;
   }

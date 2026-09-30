@@ -1,57 +1,95 @@
 # Go2 학습 흐름·정책 설계·실행 명령
 
-2026-09-28 확인한 `Unitree-Go2-Flat` 기준이다. 모든 명령은 프로젝트 루트에서 해당 Python 환경을 활성화한 뒤 실행한다. 아래 설정값은 소스의 기본값이며, 실제 실행에 사용한 값은 각 로그 폴더의 `params/agent.yaml`, `params/env.yaml`에서 확인한다.
+`Unitree-Go2-Flat` 기준의 Go2 전용 학습 안내다. 모든 명령은 프로젝트 루트에서 해당 Python 환경을 활성화한 뒤 실행한다. 아래 설정값은 소스의 기본값이며, 실제 실행에 사용한 값은 각 로그 폴더의 `params/agent.yaml`, `params/env.yaml`에서 확인한다.
 
-## 1. 학습 전체 흐름도
+## 1. 폴더 순서로 보는 학습 구성
+
+```text
+src/tasks/go2/
+├── registry.py                  Go2 평지·험지 태스크 등록
+├── step_01_environment/         ① 로봇이 움직일 환경 구성
+│   ├── scene.py                 험지 지형 스캔 센서
+│   ├── actions.py               관절 행동 설정
+│   ├── commands.py              목표 속도 명령
+│   ├── events.py                초기화·랜덤화·외란
+│   ├── base_env.py              지형·물리·뷰어 기본값과 단계별 설정 조립
+│   └── go2_env.py               Go2 모델·센서·보행 및 평지·험지 차이
+├── step_02_learning/            ② 정책에 줄 정보와 학습 목표 구성
+│   ├── observations.py          Actor·Critic 관측
+│   ├── rewards.py               보상 항목과 가중치
+│   ├── terminations.py          에피소드 종료 조건
+│   ├── curriculum.py            학습 진행에 따른 난이도
+│   ├── metrics.py               기록할 지표
+│   └── mdp/                    관측·보상·커리큘럼 등의 실제 계산 함수
+├── step_03_training/            ③ 경험 수집·PPO 학습·모델 저장
+│   ├── ppo.py                   신경망·PPO·반복·저장 기본값
+│   ├── runner.py                체크포인트와 ONNX 저장
+│   └── train.py                 CLI 처리·GPU·로그·환경·학습기 생성
+└── step_04_evaluation/          ④ 학습한 정책 실행·평가
+    └── play.py                  체크포인트 로드·시각화
+```
+
+폴더 번호는 코드를 읽고 설정하는 순서다. 학습 중에는 **관측 → 정책·행동 → 물리 시뮬레이션 → 보상·종료·다음 관측**을 반복하고, 경험을 모은 뒤 PPO로 가중치를 업데이트한다. 매 환경 스텝마다 01~04 폴더를 순차 실행한다는 의미는 아니다.
+
+로봇 모델과 제어 상수는 `src/assets/robots/unitree_go2/`에 있다. 실행 명령은 기존처럼 `python scripts/train.py ...`, `python scripts/play.py ...`를 사용한다. 두 스크립트는 각각 03단계와 04단계의 `main()`을 호출하는 진입점이다.
+
+### 학습 전체 흐름도
+
+아래 `step_*` 경로는 `src/tasks/go2/` 기준이다.
 
 ```mermaid
 flowchart TD
-    A["scripts/train.py: main()<br/>태스크·명령행 인자 읽기"] --> B["src/tasks/__init__.py<br/>태스크 모듈 자동 import"]
-    B --> C["src/tasks/velocity/config/go2/__init__.py<br/>Unitree-Go2-Flat 등록"]
-    C --> D["velocity_env_cfg.py + go2/env_cfgs.py<br/>환경 설정 구성"]
-    C --> E["go2/rl_cfg.py<br/>Actor·Critic·PPO 설정 구성"]
-    D --> F["train.py: TrainConfig.from_task()<br/>설정 로드 후 CLI 값 반영"]
-    E --> F
-    F --> G["train.py: launch_training()<br/>GPU·로그 경로 설정"]
-    G --> H["train.py: run_train()<br/>환경·녹화기·학습기 생성"]
-    H --> I["rsl_rl/runners/on_policy_runner.py: learn()<br/>환경당 24스텝 경험 수집"]
-    I --> J["rsl_rl/algorithms/ppo.py<br/>compute_returns() → update()"]
+    A["scripts/train.py<br/>step_03_training/train.py의 main() 호출"] --> B["src/tasks/__init__.py → go2/registry.py<br/>Go2 평지·험지 태스크 등록"]
+    B --> C["step_01_environment/<br/>장면·행동·명령·이벤트 구성"]
+    B --> D["step_02_learning/<br/>관측·보상·종료·커리큘럼·지표 구성"]
+    C --> E["step_01_environment/base_env.py → go2_env.py<br/>공통 환경 조립 후 Go2 설정 적용"]
+    D --> E
+    B --> F["step_03_training/ppo.py<br/>Actor·Critic·PPO 설정"]
+    E --> G["step_03_training/train.py: TrainConfig.from_task()<br/>기본값 로드 후 CLI 옵션 반영"]
+    F --> G
+    G --> H["launch_training() → run_train()<br/>GPU·로그·환경·학습기 생성"]
+    H --> I["rsl_rl OnPolicyRunner.learn()<br/>경험 수집"]
+    I --> J["rsl_rl PPO<br/>compute_returns() → update()"]
     J --> I
-    J --> K["src/tasks/velocity/rl/runner.py: save()<br/>체크포인트·ONNX 저장"]
-    H --> L["mjlab/utils/wrappers/video_recorder.py<br/>지정한 환경 스텝에서 녹화"]
+    J --> K["step_03_training/runner.py: save()<br/>체크포인트·ONNX 저장"]
+    K --> L["scripts/play.py → step_04_evaluation/play.py<br/>저장한 체크포인트 실행·평가"]
+    H --> M["mjlab VideoRecorder<br/>지정한 환경 스텝에서 녹화"]
 ```
 
 태스크 등록 과정에서 설정 객체가 만들어지고, `TrainConfig.from_task()`는 선택한 태스크의 설정을 불러온다. 명령행 옵션은 불러온 기본값을 덮어쓴다.
 
-### 파일별 역할
+### 파일별 역할과 링크
 
 | 파일 | 역할 |
 |---|---|
-| [scripts/train.py](scripts/train.py) | 인자 해석, GPU 설정, 환경·학습기 생성, 설정 저장, 학습 시작 |
-| [src/tasks/__init__.py](src/tasks/__init__.py) | 태스크 하위 모듈을 import하여 레지스트리에 등록 |
-| [src/tasks/velocity/config/go2/__init__.py](src/tasks/velocity/config/go2/__init__.py) | 태스크 이름과 환경·PPO 설정·Runner 연결 |
-| [src/tasks/velocity/velocity_env_cfg.py](src/tasks/velocity/velocity_env_cfg.py) | 공통 관측·행동·보상·명령·이벤트·종료·커리큘럼 설정 |
-| [src/tasks/velocity/config/go2/env_cfgs.py](src/tasks/velocity/config/go2/env_cfgs.py) | Go2 전용 보행·자세·센서 설정, 평지 환경 구성 |
-| [src/tasks/velocity/config/go2/rl_cfg.py](src/tasks/velocity/config/go2/rl_cfg.py) | 신경망 구조, PPO 파라미터, 반복·저장 기본값 |
-| [src/assets/robots/unitree_go2/go2_constants.py](src/assets/robots/unitree_go2/go2_constants.py) | 로봇 모델 로드, 기본 관절 자세, 관절 제어 이득·토크 제한 |
-| [src/assets/robots/unitree_go2/xmls/go2.xml](src/assets/robots/unitree_go2/xmls/go2.xml) | 몸체·관절·충돌 형상 등 물리 모델 |
-| [src/tasks/velocity/mdp/observations.py](src/tasks/velocity/mdp/observations.py) | 보행 위상, 발 높이·접촉 등 관측 계산 |
-| [src/tasks/velocity/mdp/rewards.py](src/tasks/velocity/mdp/rewards.py) | 속도 추종, 보행 타이밍, 발 미끄러짐 등 보상 계산 |
-| [src/tasks/velocity/mdp/curriculums.py](src/tasks/velocity/mdp/curriculums.py) | 학습 진행에 따른 속도 범위 등 변경 |
-| [src/tasks/velocity/rl/runner.py](src/tasks/velocity/rl/runner.py) | 체크포인트 저장 시 ONNX도 내보내는 Runner |
-| [scripts/play.py](scripts/play.py) | 학습된 체크포인트를 불러와 실행·시각화 |
+| [scripts/train.py](scripts/train.py), [scripts/play.py](scripts/play.py) | 기존 CLI 명령을 유지하는 진입점 |
+| [src/tasks/__init__.py](src/tasks/__init__.py) | Go2 태스크 등록 모듈 import |
+| [registry.py](src/tasks/go2/registry.py) | 태스크 이름과 환경·PPO 설정·Runner 연결 |
+| [scene.py](src/tasks/go2/step_01_environment/scene.py), [actions.py](src/tasks/go2/step_01_environment/actions.py), [commands.py](src/tasks/go2/step_01_environment/commands.py), [events.py](src/tasks/go2/step_01_environment/events.py) | 환경 구성 요소별 기본값 |
+| [base_env.py](src/tasks/go2/step_01_environment/base_env.py) | 01·02단계 구성 요소를 환경 설정으로 조립 |
+| [go2_env.py](src/tasks/go2/step_01_environment/go2_env.py) | Go2 전용 보행·자세·센서와 평지·험지 설정 |
+| [observations.py](src/tasks/go2/step_02_learning/observations.py), [rewards.py](src/tasks/go2/step_02_learning/rewards.py) | 관측·보상 설정 |
+| [terminations.py](src/tasks/go2/step_02_learning/terminations.py), [curriculum.py](src/tasks/go2/step_02_learning/curriculum.py), [metrics.py](src/tasks/go2/step_02_learning/metrics.py) | 종료·커리큘럼·지표 설정 |
+| [mdp/observations.py](src/tasks/go2/step_02_learning/mdp/observations.py), [mdp/rewards.py](src/tasks/go2/step_02_learning/mdp/rewards.py), [mdp/curriculums.py](src/tasks/go2/step_02_learning/mdp/curriculums.py) | 설정에서 참조하는 실제 관측·보상·커리큘럼 계산 |
+| [ppo.py](src/tasks/go2/step_03_training/ppo.py) | 신경망 구조, PPO 파라미터, 반복·저장 기본값 |
+| [train.py](src/tasks/go2/step_03_training/train.py) | 인자 해석, GPU·로그 설정, 환경·학습기 생성, 학습 시작 |
+| [runner.py](src/tasks/go2/step_03_training/runner.py) | 체크포인트 저장 시 ONNX도 내보내는 Runner |
+| [play.py](src/tasks/go2/step_04_evaluation/play.py) | 학습된 체크포인트 실행·시각화 |
+| [go2_constants.py](src/assets/robots/unitree_go2/go2_constants.py) | 로봇 모델 로드, 기본 관절 자세, 제어 이득·토크 제한 |
+| [go2.xml](src/assets/robots/unitree_go2/xmls/go2.xml) | 몸체·관절·충돌 형상 등 물리 모델 |
 
 ### 설정 적용 순서
 
 ```text
-make_velocity_env_cfg()           공통 기본값 생성
-  → unitree_go2_rough_env_cfg()    Go2 전용 설정 적용
-  → unitree_go2_flat_env_cfg()     평지로 변경하고 지형 스캔 제거
-  → TrainConfig.from_task()       등록된 설정 로드
-  → CLI 옵션                     이번 실행의 값으로 덮어쓰기
+step_01_environment/ 각 구성 + step_02_learning/ 각 구성
+  → base_env.py: make_velocity_env_cfg()       공통 환경 조립
+  → go2_env.py: unitree_go2_rough_env_cfg()    Go2 전용 설정 적용
+  → go2_env.py: unitree_go2_flat_env_cfg()     평지 태스크일 때 지형 스캔 제거
+  → step_03_training/train.py: TrainConfig.from_task()
+  → CLI 옵션                                 이번 실행의 값으로 덮어쓰기
 ```
 
-공통 설정을 바꾸면 이를 사용하는 다른 로봇에도 영향을 준다. Go2만 바꾸려면 `go2/env_cfgs.py`, Go2 평지만 바꾸려면 `unitree_go2_flat_env_cfg()`에서 값을 덮어쓴다. `if play:` 내부는 실행 모드 전용이므로 학습에 적용할 설정은 그 밖에 둔다.
+공통 설정과 `step_01_environment/go2_env.py`는 Go2 평지·험지 태스크에서 함께 사용한다. Go2 평지만 바꾸려면 `unitree_go2_flat_env_cfg()`에서 값을 덮어쓴다. `if play:` 내부는 실행 모드 전용이므로 학습에 적용할 설정은 그 밖에 둔다.
 
 ### 라이브러리에서 실행되는 부분
 
@@ -67,7 +105,7 @@ make_velocity_env_cfg()           공통 기본값 생성
 | `rsl_rl/algorithms/ppo.py` | PPO 손실 계산, 역전파, 옵티마이저 업데이트 |
 | `mjlab/utils/wrappers/video_recorder.py` | 지정한 스텝에서 프레임을 모아 영상 저장 |
 
-현재 환경에서 패키지들은 `/home/lee/miniconda3/envs/unitree_rl_mjlab/lib/python3.11/site-packages/` 아래에 있다. Runner 상속 관계는 `VelocityOnPolicyRunner → MjlabOnPolicyRunner → OnPolicyRunner`이며, 실제 학습 반복문은 마지막 클래스의 `learn()`을 사용한다.
+패키지 경로는 활성화한 Python 환경의 `site-packages/` 아래이며 설치 환경마다 다르다. Runner 상속 관계는 `VelocityOnPolicyRunner → MjlabOnPolicyRunner → OnPolicyRunner`이며, 실제 학습 반복문은 마지막 클래스의 `learn()`을 사용한다.
 
 ## 2. 기존 학습 정책 설계
 
@@ -113,7 +151,7 @@ Critic도 은닉층 `(512, 256, 128)`과 ELU를 사용한다. Actor와 Critic �
 
 ### 보상 설계
 
-보상 항목과 가중치는 `velocity_env_cfg.py`, 실제 계산식은 `mdp/rewards.py` 및 가져온 mjlab 함수에서 확인한다.
+보상 항목과 가중치는 `step_02_learning/rewards.py`, Go2 전용 덮어쓰기는 `step_01_environment/go2_env.py`, 실제 계산식은 `step_02_learning/mdp/rewards.py` 및 가져온 mjlab 함수에서 확인한다. 여기서 `step_*` 경로는 모두 `src/tasks/go2/` 기준이다.
 
 | 항목 | weight | 유도하는 행동 |
 |---|---:|---|
@@ -210,15 +248,19 @@ for iteration in range(max_iterations):
 
 줄 끝의 `\`는 Bash에서 명령을 다음 줄로 이어 쓰는 문법이다. 현재 인자 처리 방식은 불리언 값을 명시해야 하므로 영상 옵션은 **`--video True`**로 쓴다. `--video`만 쓰면 값이 없다는 오류가 발생한다.
 
-### 4.1 설치·동작 확인: 64개 환경, 20회
+### 4.1 설치·동작 확인: 8개 환경, 3회
 
 ```bash
 python scripts/train.py Unitree-Go2-Flat \
-  --env.scene.num-envs 64 \
-  --agent.max-iterations 20 \
-  --agent.run-name setup_test \
-  --agent.logger tensorboard
+  --env.scene.num-envs 8 \
+  --agent.max-iterations 3 \
+  --agent.num-steps-per-env 8 \
+  --agent.save-interval 1 \
+  --agent.logger tensorboard \
+  --agent.run-name refactor_smoke
 ```
+
+한 반복에 `8 × 8 = 64개` 경험을 모아 PPO를 업데이트하고, 3회 반복한다. 결과는 `logs/rsl_rl/go2_velocity/<날짜_시간>_refactor_smoke/`에 저장한다. 이 명령은 환경 생성·경험 수집·PPO 업데이트·모델 저장·ONNX 내보내기 흐름의 동작 확인용이다. 보행 성능은 충분히 학습한 정책으로 별도 평가한다.
 
 ### 4.2 짧은 영상 테스트: 10개 환경, 100회
 
@@ -280,6 +322,7 @@ python scripts/train.py Unitree-Go2-Flat \
 | `Unitree-Go2-Flat` | Go2 평지 속도 추종 태스크 선택 |
 | `--env.scene.num-envs` | 병렬 시뮬레이션 환경 수 |
 | `--agent.max-iterations` | 학습 반복 횟수, 에피소드 수나 시드 수가 아님 |
+| `--agent.num-steps-per-env` | 매 PPO 업데이트 전 환경당 수집할 스텝 수 |
 | `--agent.save-interval` | 모델 저장 간격, 학습 반복 기준 |
 | `--agent.run-name` | 실행 폴더 이름 뒤에 붙는 실험 이름 |
 | `--agent.logger tensorboard` | 보상·손실 등 학습 지표를 TensorBoard 형식으로 기록 |
@@ -349,29 +392,34 @@ python scripts/play.py Unitree-Go2-Flat \
 
 본 학습 결과를 볼 때는 `--checkpoint-file`을 해당 실행 폴더의 모델 경로로 바꾼다.
 
-현재 `train.py`는 실시간 MuJoCo 창을 띄우지 않는다. `--video True`도 영상 파일 저장 기능이다. 학습 중 별도 터미널에서 `play.py`를 실행할 수는 있지만, 불러온 체크포인트의 동작을 보여주며 학습 중 가중치가 자동으로 갱신되지는 않는다.
+현재 `step_03_training/train.py`는 실시간 MuJoCo 창을 띄우지 않는다. `--video True`도 영상 파일 저장 기능이다. 학습 중 별도 터미널에서 `play.py`를 실행할 수는 있지만, 불러온 체크포인트의 동작을 보여주며 학습 중 가중치가 자동으로 갱신되지는 않는다.
 
 ## 6. 정책 설계를 바꿀 때 볼 곳
 
 | 바꾸려는 내용 | 우선 확인할 파일·설정 |
 |---|---|
-| 명령 속도 범위·난이도 | `velocity_env_cfg.py`의 `commands`, `curriculum` |
-| Go2 보행 주기·발 타이밍·자세 | `go2/env_cfgs.py`, 공통 `phase` 관측과 `foot_gait` 보상 |
-| 안정성·미끄러짐·발 높이 | `rewards` 항목과 `mdp/rewards.py` 계산식 |
-| 정책에 제공할 센서 정보 | `observations`, `mdp/observations.py` |
-| 관절 행동 크기·제어 특성 | `actions`, `go2_constants.py` |
-| 신경망 크기·학습률·PPO | `go2/rl_cfg.py` |
-| 랜덤화·외란·실패 조건 | `events`, `terminations` |
+| 지형·물리 스텝·환경 구성 | `step_01_environment/base_env.py`, `go2_env.py` |
+| 지형 스캔 센서 | `step_01_environment/scene.py` |
+| 명령 속도 범위·난이도 | `step_01_environment/commands.py`, `step_02_learning/curriculum.py` |
+| Go2 보행 주기·발 타이밍·자세 | `step_01_environment/go2_env.py`, `step_02_learning/observations.py`의 `phase`, `rewards.py`의 `foot_gait` |
+| 안정성·미끄러짐·발 높이 | `step_02_learning/rewards.py`, `step_02_learning/mdp/rewards.py` |
+| 정책에 제공할 센서 정보 | `step_02_learning/observations.py`, `step_02_learning/mdp/observations.py` |
+| 관절 행동 크기·제어 특성 | `step_01_environment/actions.py`, `go2_env.py`, 로봇 에셋의 `go2_constants.py` |
+| 신경망 크기·학습률·PPO | `step_03_training/ppo.py` |
+| 랜덤화·외란 | `step_01_environment/events.py` |
+| 실패·시간 제한 종료 조건 | `step_02_learning/terminations.py`, `step_01_environment/go2_env.py` |
+| 학습 지표 | `step_02_learning/metrics.py` |
+| 학습 실행·저장·평가 | `step_03_training/train.py`, `runner.py`, `step_04_evaluation/play.py` |
 
-예를 들어 Go2 평지에서만 발 높이 목표와 행동 변화 페널티를 바꾸려면 `unitree_go2_flat_env_cfg()`의 `return cfg` 전에 다음처럼 추가한다. 설명용 예시이며 현재 학습 코드에 적용한 변경은 아니다.
+위 `step_*` 경로는 `src/tasks/go2/` 기준이다. 예를 들어 Go2 평지에서만 발 높이 목표와 행동 변화 페널티를 바꾸려면 `step_01_environment/go2_env.py`의 `unitree_go2_flat_env_cfg()`에서 `return cfg` 전에 다음처럼 추가한다. 설명용 예시이며 현재 학습 코드에 적용한 변경은 아니다.
 
 ```python
 cfg.rewards["foot_clearance"].params["target_height"] = 0.12
 cfg.rewards["action_rate_l2"].weight = -0.1
 ```
 
-보행 주기를 바꿀 때는 `phase` 관측과 `foot_gait` 보상의 주기를 함께 확인한다. 공통 파일을 직접 수정하면 다른 로봇도 영향을 받을 수 있으므로 로봇별 덮어쓰기를 우선 검토한다.
+보행 주기를 바꿀 때는 `phase` 관측과 `foot_gait` 보상의 주기를 함께 확인한다. 공통 파일을 수정하면 Go2 평지·험지 태스크에 함께 적용되므로 특정 지형에만 적용할 변경은 해당 환경 함수에서 덮어쓴다.
 
 설정 파일을 수정해도 기존 체크포인트의 가중치는 바뀌지 않는다. 변경한 목표를 반영하려면 새로 학습하거나 호환되는 체크포인트에서 이어서 학습해야 한다. 관측 차원이나 신경망 구조가 달라지면 기존 가중치를 그대로 불러오지 못할 수 있다. `params/*.yaml`은 당시 실행의 기록이며, 다음 실행의 기본값은 소스 설정이나 CLI에서 변경한다.
 
-G1 등 다른 로봇의 설정은 `src/tasks/velocity/config/<로봇>/`, 모션 추종 태스크는 `src/tasks/tracking/`에서 확인한다.
+이 저장소는 Go2 전용이다. 지원 태스크는 `Unitree-Go2-Flat`과 `Unitree-Go2-Rough`이며, `python scripts/list_envs.py`로 확인할 수 있다.

@@ -4,7 +4,7 @@ Displays a 10-row grid of terrains with increasing difficulty.
 Configurations and parameters are dynamically loaded from mjlab.terrains.config.
 
 Run with:
-  uv run src/mjlab/scripts/visualize_terrain.py
+  python scripts/visualize_terrain.py
 """
 
 from __future__ import annotations
@@ -18,11 +18,6 @@ import mujoco
 import numpy as np
 import viser
 
-from mjlab.asset_zoo.robots import (
-  get_g1_robot_cfg,
-  get_go1_robot_cfg,
-  get_yam_robot_cfg,
-)
 from mjlab.terrains.config import ALL_TERRAINS_CFG
 from mjlab.terrains.terrain_generator import (
   TerrainGenerator,
@@ -32,13 +27,12 @@ from mjlab.viewer.viser.conversions import (
   merge_geoms,
   merge_geoms_global,
 )
+from src.assets.robots import get_go2_robot_cfg
 
 # Supported robots for visualization.
 ROBOT_CFG_GETTERS = {
   "None": None,
-  "Unitree Go1": get_go1_robot_cfg,
-  "Unitree G1": get_g1_robot_cfg,
-  "Yam": get_yam_robot_cfg,
+  "Unitree Go2": get_go2_robot_cfg,
 }
 
 # Parameter range hints for sliders.
